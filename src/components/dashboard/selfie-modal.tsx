@@ -4,7 +4,15 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { cn } from '@/lib/utils';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { Camera, RefreshCw, Check, AlertCircle, Building2, Home, Briefcase, MapPin } from 'lucide-react';
+import { Camera, RefreshCw, Check, AlertCircle, Building2, Home, Briefcase, MapPin, CheckCircle2 } from 'lucide-react';
+import { distanceMeters } from '@/lib/geo';
+import api from '@/lib/api-client';
+
+export interface PunchLocationCoords {
+  lat: number;
+  lng: number;
+  accuracy?: number;
+}
 
 export type WorkMode = 'office' | 'home' | 'client' | 'onsite';
 
@@ -20,7 +28,7 @@ interface SelfieModalProps {
   onClose: () => void;
   actionType: 'punch_in' | 'punch_out';
   initialWorkMode?: WorkMode;
-  onCapture: (selfieDataUrl: string | null, workMode: WorkMode) => void;
+  onCapture: (selfieDataUrl: string | null, workMode: WorkMode, coords: PunchLocationCoords | null) => void;
   loading?: boolean;
 }
 
@@ -81,6 +89,78 @@ export function SelfieModal({
   const [useFallbackCamera, setUseFallbackCamera] = useState(false);
   const [initializing, setInitializing] = useState(false);
   const [processing, setProcessing] = useState(false);
+  // Location verification state
+  const [geoChecking, setGeoChecking] = useState(false);
+  const [geoResult, setGeoResult] = useState<{
+    status: 'inside' | 'outside' | 'unavailable' | 'off';
+    distanceM: number | null;
+    zoneName: string | null;
+    coords: PunchLocationCoords | null;
+  }>({ status: 'off', distanceM: null, zoneName: null, coords: null });
+
+  const verifyLocation = useCallback(async () => {
+    setGeoChecking(true);
+    try {
+      const res = await api.geoZones.get().catch(() => ({ config: { enabled: false, zones: [] } }));
+      const config = res.config;
+      if (!config || !config.enabled || !config.zones || config.zones.length === 0) {
+        setGeoResult({ status: 'off', distanceM: null, zoneName: null, coords: null });
+        setGeoChecking(false);
+        return;
+      }
+
+      if (typeof navigator === 'undefined' || !navigator.geolocation) {
+        setGeoResult({ status: 'unavailable', distanceM: null, zoneName: null, coords: null });
+        setGeoChecking(false);
+        return;
+      }
+
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          const lat = pos.coords.latitude;
+          const lng = pos.coords.longitude;
+          const accuracy = Number.isFinite(pos.coords.accuracy) ? pos.coords.accuracy : undefined;
+          const userCoords: PunchLocationCoords = { lat, lng, accuracy };
+
+          let inside = false;
+          let matchedLabel = config.zones[0]?.label ?? 'Simba House';
+          let minDistance = Infinity;
+
+          for (const z of config.zones) {
+            const d = distanceMeters(lat, lng, z.lat, z.lng);
+            const tolerance = Math.min(Math.max(accuracy ?? 0, 0), 200);
+            if (d <= z.radiusM + tolerance) {
+              inside = true;
+              matchedLabel = z.label;
+              minDistance = 0;
+              break;
+            }
+            const distFromEdge = d - z.radiusM;
+            if (distFromEdge < minDistance) {
+              minDistance = distFromEdge;
+              matchedLabel = z.label;
+            }
+          }
+
+          setGeoResult({
+            status: inside ? 'inside' : 'outside',
+            distanceM: inside ? 0 : Math.round(minDistance),
+            zoneName: matchedLabel,
+            coords: userCoords,
+          });
+          setGeoChecking(false);
+        },
+        () => {
+          setGeoResult({ status: 'unavailable', distanceM: null, zoneName: null, coords: null });
+          setGeoChecking(false);
+        },
+        { enableHighAccuracy: true, timeout: 6000, maximumAge: 30000 }
+      );
+    } catch {
+      setGeoResult({ status: 'unavailable', distanceM: null, zoneName: null, coords: null });
+      setGeoChecking(false);
+    }
+  }, []);
 
   // Stop live media stream
   const stopStream = useCallback(() => {
@@ -131,7 +211,7 @@ export function SelfieModal({
 
   useEffect(() => {
     if (open) {
-      setPhoto(null);
+      verifyLocation();
       startLiveCamera();
     } else {
       stopStream();
@@ -204,12 +284,12 @@ export function SelfieModal({
   };
 
   const handleConfirm = () => {
-    onCapture(photo, workMode);
+    onCapture(photo, workMode, geoResult.coords);
   };
 
   const handleSkip = () => {
     stopStream();
-    onCapture(null, workMode);
+    onCapture(null, workMode, geoResult.coords);
   };
 
   const actionLabel = actionType === 'punch_in' ? 'Punch In' : 'Punch Out';
@@ -249,6 +329,45 @@ export function SelfieModal({
               </button>
             ))}
           </div>
+        </div>
+        {/* Live Location Verification Banner */}
+        <div className="w-full mb-3">
+          {workMode === 'office' ? (
+            geoChecking ? (
+              <div className="flex items-center justify-center gap-2 rounded-lg bg-blue-50 border border-blue-200 py-2 px-3 text-xs text-blue-700">
+                <div className="h-3 w-3 animate-spin rounded-full border-2 border-blue-600 border-t-transparent" />
+                <span>Verifying office location...</span>
+              </div>
+            ) : geoResult.status === 'inside' ? (
+              <div className="flex items-center gap-2 rounded-lg bg-emerald-50 border border-emerald-200 py-2 px-3 text-xs text-emerald-800">
+                <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
+                <div>
+                  <span className="font-semibold">Verified at Office:</span> Inside {geoResult.zoneName || 'Simba House'}
+                </div>
+              </div>
+            ) : geoResult.status === 'outside' ? (
+              <div className="rounded-lg bg-amber-50 border border-amber-200 p-2.5 text-xs text-amber-900">
+                <div className="flex items-center gap-1.5 font-semibold text-amber-900 mb-0.5">
+                  <AlertCircle className="h-4 w-4 text-amber-600 shrink-0" />
+                  Outside Office Location
+                </div>
+                <p className="text-[11px] text-amber-800 leading-normal">
+                  You are {geoResult.distanceM != null ? `${geoResult.distanceM >= 1000 ? `${(geoResult.distanceM / 1000).toFixed(1)} km` : `${geoResult.distanceM} m`} away from ${geoResult.zoneName || 'Simba House'}` : 'not at the office'}.
+                  If working remotely, select <strong>Home</strong>, <strong>Client</strong>, or <strong>On-site</strong> above.
+                </p>
+              </div>
+            ) : geoResult.status === 'unavailable' ? (
+              <div className="flex items-center gap-1.5 rounded-lg bg-gray-50 border border-gray-200 py-1.5 px-3 text-[11px] text-gray-500">
+                <MapPin className="h-3.5 w-3.5 text-gray-400 shrink-0" />
+                <span>Location permission unavailable &mdash; punch will be logged for review</span>
+              </div>
+            ) : null
+          ) : (
+            <div className="flex items-center gap-1.5 rounded-lg bg-gray-50 border border-gray-200 py-1.5 px-3 text-[11px] text-gray-600">
+              <span className="font-medium text-gray-900">{WORK_MODES.find(m => m.id === workMode)?.label}:</span>
+              <span>Remote location mode selected</span>
+            </div>
+          )}
         </div>
 
 

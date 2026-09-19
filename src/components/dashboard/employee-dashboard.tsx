@@ -1120,19 +1120,18 @@ export function EmployeeDashboard() {
     })();
   }, [employeeId]);
 
-  const executePunchIn = useCallback(async (selfieDataUrl: string | null, mode?: WorkMode) => {
+  const executePunchIn = useCallback(async (selfieDataUrl: string | null, mode?: WorkMode, verifiedCoords?: { lat: number; lng: number; accuracy?: number } | null) => {
     if (!employeeId) return;
     setPunchLoading(true);
     const chosenMode = mode ?? workMode;
     try {
       const now = new Date().toISOString();
-      const coords = await getPunchCoords();
+      const coords = verifiedCoords ?? (await getPunchCoords());
       const { record: att } = await api.attendance.punchIn({
         ...(coords ?? {}),
         selfie: selfieDataUrl ?? undefined,
         work_mode: chosenMode,
       });
-
       const { segment } = await api.segments.startBreak(att.id);
 
       setAttendanceId(att.id);
@@ -1218,7 +1217,7 @@ export function EmployeeDashboard() {
     setPunchLoading(false);
   }, [attendanceId, toast]);
 
-  const executePunchOut = useCallback(async (selfieDataUrl: string | null, mode?: WorkMode) => {
+  const executePunchOut = useCallback(async (selfieDataUrl: string | null, mode?: WorkMode, verifiedCoords?: { lat: number; lng: number; accuracy?: number } | null) => {
     if (!attendanceId) return;
     setPunchLoading(true);
     const chosenMode = mode ?? workMode;
@@ -1229,13 +1228,12 @@ export function EmployeeDashboard() {
         setActiveSegmentId(null);
       }
 
-      const coords = await getPunchCoords();
+      const coords = verifiedCoords ?? (await getPunchCoords());
       const { record: att } = await api.attendance.punchOut({
         ...(coords ?? {}),
         selfie: selfieDataUrl ?? undefined,
         work_mode: chosenMode,
       });
-
       setSession((prev) => {
         if (!prev) return prev;
         const segs = [...prev.segments];
@@ -1269,13 +1267,13 @@ export function EmployeeDashboard() {
     setSelfieModalOpen(true);
   }, []);
 
-  const handleSelfieCaptured = useCallback(async (selfieDataUrl: string | null, selectedMode: WorkMode) => {
+  const handleSelfieCaptured = useCallback(async (selfieDataUrl: string | null, selectedMode: WorkMode, coords: { lat: number; lng: number; accuracy?: number } | null) => {
     setWorkMode(selectedMode);
     setSelfieModalOpen(false);
     if (selfieAction === 'punch_in') {
-      await executePunchIn(selfieDataUrl, selectedMode);
+      await executePunchIn(selfieDataUrl, selectedMode, coords);
     } else {
-      await executePunchOut(selfieDataUrl, selectedMode);
+      await executePunchOut(selfieDataUrl, selectedMode, coords);
     }
   }, [selfieAction, executePunchIn, executePunchOut]);
 

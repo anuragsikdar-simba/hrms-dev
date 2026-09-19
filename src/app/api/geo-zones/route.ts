@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { requireAdmin } from '@/lib/auth-helpers';
+import { requireAdmin, verifyAuth } from '@/lib/auth-helpers';
 import { logAudit, getClientIp } from '@/lib/audit';
 import { rateLimiters } from '@/lib/rate-limit';
 import { errorResponse } from '@/lib/api-errors';
-import { GEO_ZONES_KEY, parseGeoConfig, type GeoConfig } from '@/lib/geo-check-server';
+import { GEO_ZONES_KEY, loadGeoConfig, parseGeoConfig, type GeoConfig } from '@/lib/geo-check-server';
 
 /* ------------------------------------------------------------------ */
 /*  GET /api/geo-zones      -- read zones + enabled flag (admin)       */
@@ -15,19 +15,8 @@ import { GEO_ZONES_KEY, parseGeoConfig, type GeoConfig } from '@/lib/geo-check-s
 
 export async function GET() {
   try {
-    const admin = await requireAdmin();
-    const db = admin.supabase;
-
-    const { data } = await db
-      .from('email_config')
-      .select('value')
-      .eq('key', GEO_ZONES_KEY)
-      .maybeSingle();
-
-    let config: GeoConfig = { enabled: false, zones: [] };
-    if (data?.value) {
-      try { config = parseGeoConfig(JSON.parse(data.value)); } catch { /* corrupt -> defaults */ }
-    }
+    await verifyAuth();
+    const config = await loadGeoConfig();
     return NextResponse.json({ success: true, data: { config } });
   } catch (error) {
     return errorResponse(error, 'Failed to load punch locations.');
