@@ -1,15 +1,26 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { cn } from '@/lib/utils';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { Camera, RefreshCw, Check, AlertCircle } from 'lucide-react';
+import { Camera, RefreshCw, Check, AlertCircle, Building2, Home, Briefcase, MapPin } from 'lucide-react';
+
+export type WorkMode = 'office' | 'home' | 'client' | 'onsite';
+
+const WORK_MODES: { id: WorkMode; label: string; icon: React.ElementType }[] = [
+  { id: 'office', label: 'Office', icon: Building2 },
+  { id: 'home', label: 'Home', icon: Home },
+  { id: 'client', label: 'Client', icon: Briefcase },
+  { id: 'onsite', label: 'On-site', icon: MapPin },
+];
 
 interface SelfieModalProps {
   open: boolean;
   onClose: () => void;
   actionType: 'punch_in' | 'punch_out';
-  onCapture: (selfieDataUrl: string | null) => void;
+  initialWorkMode?: WorkMode;
+  onCapture: (selfieDataUrl: string | null, workMode: WorkMode) => void;
   loading?: boolean;
 }
 
@@ -57,9 +68,11 @@ export function SelfieModal({
   open,
   onClose,
   actionType,
+  initialWorkMode = 'office',
   onCapture,
   loading = false,
 }: SelfieModalProps) {
+  const [workMode, setWorkMode] = useState<WorkMode>(initialWorkMode);
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -191,12 +204,12 @@ export function SelfieModal({
   };
 
   const handleConfirm = () => {
-    onCapture(photo);
+    onCapture(photo, workMode);
   };
 
   const handleSkip = () => {
     stopStream();
-    onCapture(null);
+    onCapture(null, workMode);
   };
 
   const actionLabel = actionType === 'punch_in' ? 'Punch In' : 'Punch Out';
@@ -213,6 +226,31 @@ export function SelfieModal({
             Smile for a quick selfie to verify your {actionLabel.toLowerCase()}.
           </DialogDescription>
         </DialogHeader>
+        {/* Work Location Mode Selection */}
+        <div className="w-full mt-2 mb-2">
+          <p className="text-xs font-semibold text-gray-700 mb-2">
+            Select work location:
+          </p>
+          <div className="grid grid-cols-4 gap-1.5">
+            {WORK_MODES.map((m) => (
+              <button
+                key={m.id}
+                type="button"
+                onClick={() => setWorkMode(m.id)}
+                className={cn(
+                  'flex flex-col items-center justify-center py-2 px-1 rounded-lg border text-xs font-medium transition-all cursor-pointer',
+                  workMode === m.id
+                    ? 'border-gray-900 bg-gray-900 text-white shadow-sm'
+                    : 'border-gray-200 bg-gray-50/70 text-gray-700 hover:bg-gray-100 hover:border-gray-300'
+                )}
+              >
+                <m.icon className={cn('h-4 w-4 mb-1', workMode === m.id ? 'text-white' : 'text-gray-500')} />
+                <span className="text-[11px] leading-tight text-center">{m.label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+
 
         {/* Hidden native camera capture input for mobile devices */}
         <input

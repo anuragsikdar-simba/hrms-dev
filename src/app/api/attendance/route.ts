@@ -218,6 +218,12 @@ export async function POST(request: NextRequest) {
     const geoLat = num((body as Record<string, unknown>).lat);
     const geoLng = num((body as Record<string, unknown>).lng);
     const geoAccuracy = num((body as Record<string, unknown>).accuracy);
+    const rawWorkMode = (body as Record<string, unknown>).work_mode;
+    const validModes = ['office', 'home', 'client', 'onsite'];
+    const workMode = typeof rawWorkMode === 'string' && validModes.includes(rawWorkMode)
+      ? rawWorkMode
+      : 'office';
+
     const now = new Date().toISOString();
     const today = businessDate();
     // Process optional compressed selfie image
@@ -289,11 +295,18 @@ export async function POST(request: NextRequest) {
       // Geofence check (allow-and-flag; blocking would strand employees with
       // inaccurate GPS). Only evaluated when the admin enabled zones.
       const geoDecision = await evaluateGeo(geoLat, geoLng, geoAccuracy);
-      const geoNote = geoDecision.enforced
-        ? geoDecision.flagged
-          ? `Location: ${geoDecision.detail}`
-          : `Location: ${geoDecision.matchedZone}`
-        : null;
+      const modeLabels: Record<string, string> = {
+        office: 'Office',
+        home: 'Work From Home',
+        client: 'Client Site',
+        onsite: 'On-site / Field',
+      };
+      const modeStr = modeLabels[workMode] ?? 'Office';
+      const geoNoteParts = [`Mode: ${modeStr}`];
+      if (geoDecision.enforced) {
+        geoNoteParts.push(geoDecision.flagged ? geoDecision.detail : `Zone: ${geoDecision.matchedZone}`);
+      }
+      const geoNote = geoNoteParts.join(' | ');
 
       // Close any stale (>trigger) open session first so a forgotten punch-in
       // from a previous day cannot block today's punch or skew worked_hours.
@@ -353,6 +366,7 @@ export async function POST(request: NextRequest) {
             ip_flagged: ipDecision.flagged,
             ...(geoNote ? { notes: geoNote } : {}),
             ...(selfiePath ? { punch_in_selfie_url: selfiePath } : {}),
+            work_mode: workMode,
           })
           .eq('id', existing.id)
           .select()
@@ -379,6 +393,7 @@ export async function POST(request: NextRequest) {
           ip_flagged: ipDecision.flagged,
           ...(geoNote ? { notes: geoNote } : {}),
           ...(selfiePath ? { punch_in_selfie_url: selfiePath } : {}),
+          work_mode: workMode,
         })
         .select()
         .single();
@@ -445,6 +460,7 @@ export async function POST(request: NextRequest) {
         punch_out: now,
         worked_hours: workedHours,
         ...(selfiePath ? { punch_out_selfie_url: selfiePath } : {}),
+        work_mode: workMode,
       })
       .eq('id', openRecord.id)
       .select()

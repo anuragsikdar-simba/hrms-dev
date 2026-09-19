@@ -39,6 +39,8 @@ export type AttendanceStatus =
   | 'holiday'
   | 'weekend';
 
+export type WorkMode = 'office' | 'home' | 'client' | 'onsite';
+
 export type ApprovalRequestType = 'regularisation' | 'wfh' | 'ip_violation';
 
 export type ApprovalRequestStatus = 'pending' | 'approved' | 'rejected';
@@ -217,6 +219,9 @@ export interface AttendanceRecord {
   ip_address: string | null;
   ip_flagged: boolean;
   notes: string | null;
+  punch_in_selfie_url?: string | null;
+  punch_out_selfie_url?: string | null;
+  work_mode?: WorkMode | null;
   created_at: string;
   updated_at: string;
 }

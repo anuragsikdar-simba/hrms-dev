@@ -22,7 +22,7 @@ import api from '@/lib/api-client';
 import { businessDate } from '@/lib/dates';
 import { calcActiveMs, calcBreakMs, formatShortTime, MAX_BREAK_MS, getPunchCoords } from './punch-button';
 import type { PunchState, PunchSession } from './punch-button';
-import { SelfieModal } from './selfie-modal';
+import { SelfieModal, type WorkMode } from './selfie-modal';
 
 /* Max session before auto punch-out (12 hours in ms) */
 const MAX_SESSION_MS = 12 * 60 * 60 * 1000;
@@ -78,7 +78,9 @@ export function PunchCard({
   onPunchOut,
   ipCheck,
   monthlySummary,
+  workMode,
 }: {
+  workMode?: WorkMode;
   punchState: PunchState;
   session: PunchSession | null;
   punchLoading: boolean;
@@ -145,16 +147,24 @@ export function PunchCard({
         <div className="grid grid-cols-[1fr_auto] gap-4 p-4 pb-3">
           {/* Left side */}
           <div className="min-w-0">
-            {/* Status pill */}
-            {punchState === 'active' ? (
-              <Badge variant="green" dot className="mb-2">Currently punched in</Badge>
-            ) : punchState === 'paused' ? (
-              <Badge variant="amber" dot className="mb-2">On break</Badge>
-            ) : punchState === 'done' ? (
-              <Badge variant="slate" dot className="mb-2">Punched out for today</Badge>
-            ) : (
-              <Badge variant="slate" dot className="mb-2">Not punched in</Badge>
-            )}
+            {/* Status pill & Work Mode badge */}
+            <div className="flex flex-wrap items-center gap-2 mb-2">
+              {punchState === 'active' ? (
+                <Badge variant="green" dot>Currently punched in</Badge>
+              ) : punchState === 'paused' ? (
+                <Badge variant="amber" dot>On break</Badge>
+              ) : punchState === 'done' ? (
+                <Badge variant="slate" dot>Punched out for today</Badge>
+              ) : (
+                <Badge variant="slate" dot>Not punched in</Badge>
+              )}
+
+              {isPunchedIn && (
+                <span className="inline-flex items-center text-[11px] font-medium px-2 py-0.5 rounded-full bg-gray-100 text-gray-700">
+                  {workMode === 'home' ? '🏠 Work From Home' : workMode === 'client' ? '💼 Client Site' : workMode === 'onsite' ? '📍 On-site' : '🏢 Office'}
+                </span>
+              )}
+            </div>
 
             {/* Network status */}
             {ipCheck.loading ? (
@@ -942,9 +952,10 @@ export function EmployeeDashboard() {
   const [attendanceId, setAttendanceId] = useState<string | null>(null); // Attendance row ID
   const [activeSegmentId, setActiveSegmentId] = useState<string | null>(null); // Current open segment ID
   const [monthlySummary, setMonthlySummary] = useState<MonthlySummary>({ present: 0, workingDays: 0, onLeave: 0, absent: 0, avgPunchIn: '--:--' });
-  // Selfie modal state
+  // Selfie modal & work mode state
   const [selfieModalOpen, setSelfieModalOpen] = useState(false);
   const [selfieAction, setSelfieAction] = useState<'punch_in' | 'punch_out'>('punch_in');
+  const [workMode, setWorkMode] = useState<WorkMode>('office');
   const { toast } = useToast();
   const autoPunchOutFired = useRef(false);
   const ipCheck = useIpCheck();
@@ -1052,6 +1063,9 @@ export function EmployeeDashboard() {
           data = records?.[0];
         }
         if (!data) return; // no open session and no record today, stay idle
+        if ((data as Record<string, unknown>).work_mode) {
+          setWorkMode((data as Record<string, unknown>).work_mode as WorkMode);
+        }
 
         // Segments come joined from the API as attendance_segments
         const rawSegs = (data.attendance_segments ?? []) as { id: string; segment_start: string; segment_end: string | null }[];
@@ -1106,15 +1120,17 @@ export function EmployeeDashboard() {
     })();
   }, [employeeId]);
 
-  const executePunchIn = useCallback(async (selfieDataUrl: string | null) => {
+  const executePunchIn = useCallback(async (selfieDataUrl: string | null, mode?: WorkMode) => {
     if (!employeeId) return;
     setPunchLoading(true);
+    const chosenMode = mode ?? workMode;
     try {
       const now = new Date().toISOString();
       const coords = await getPunchCoords();
       const { record: att } = await api.attendance.punchIn({
         ...(coords ?? {}),
         selfie: selfieDataUrl ?? undefined,
+        work_mode: chosenMode,
       });
 
       const { segment } = await api.segments.startBreak(att.id);
@@ -1140,7 +1156,7 @@ export function EmployeeDashboard() {
       toast({ variant: 'error', title: 'Punch-in failed', description: String(err) });
     }
     setPunchLoading(false);
-  }, [employeeId, toast]);
+  }, [employeeId, workMode, toast]);
 
   const requestPunchIn = useCallback(() => {
     setSelfieAction('punch_in');
@@ -1202,9 +1218,10 @@ export function EmployeeDashboard() {
     setPunchLoading(false);
   }, [attendanceId, toast]);
 
-  const executePunchOut = useCallback(async (selfieDataUrl: string | null) => {
+  const executePunchOut = useCallback(async (selfieDataUrl: string | null, mode?: WorkMode) => {
     if (!attendanceId) return;
     setPunchLoading(true);
+    const chosenMode = mode ?? workMode;
     try {
       const now = new Date();
       if (activeSegmentId) {
@@ -1216,6 +1233,7 @@ export function EmployeeDashboard() {
       const { record: att } = await api.attendance.punchOut({
         ...(coords ?? {}),
         selfie: selfieDataUrl ?? undefined,
+        work_mode: chosenMode,
       });
 
       setSession((prev) => {
@@ -1244,19 +1262,20 @@ export function EmployeeDashboard() {
       toast({ variant: 'error', title: 'Punch-out failed', description: String(err) });
     }
     setPunchLoading(false);
-  }, [attendanceId, activeSegmentId, punchState, toast]);
+  }, [attendanceId, activeSegmentId, punchState, workMode, toast]);
 
   const requestPunchOut = useCallback(() => {
     setSelfieAction('punch_out');
     setSelfieModalOpen(true);
   }, []);
 
-  const handleSelfieCaptured = useCallback(async (selfieDataUrl: string | null) => {
+  const handleSelfieCaptured = useCallback(async (selfieDataUrl: string | null, selectedMode: WorkMode) => {
+    setWorkMode(selectedMode);
     setSelfieModalOpen(false);
     if (selfieAction === 'punch_in') {
-      await executePunchIn(selfieDataUrl);
+      await executePunchIn(selfieDataUrl, selectedMode);
     } else {
-      await executePunchOut(selfieDataUrl);
+      await executePunchOut(selfieDataUrl, selectedMode);
     }
   }, [selfieAction, executePunchIn, executePunchOut]);
 
@@ -1324,6 +1343,7 @@ export function EmployeeDashboard() {
               onPunchOut={requestPunchOut}
               ipCheck={ipCheck}
               monthlySummary={monthlySummary}
+              workMode={workMode}
             />
           )}
           <UpcomingCard />
@@ -1341,6 +1361,7 @@ export function EmployeeDashboard() {
         open={selfieModalOpen}
         onClose={() => setSelfieModalOpen(false)}
         actionType={selfieAction}
+        initialWorkMode={workMode}
         onCapture={handleSelfieCaptured}
         loading={punchLoading}
       />
