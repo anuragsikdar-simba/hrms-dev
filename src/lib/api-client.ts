@@ -154,13 +154,16 @@ export const attendance = {
   // Coordinates (when the browser grants them) ride along for geofencing;
   // the server validates them against admin-defined zones and flags punches
   // outside every zone. Missing coords are allowed (flagged if geo is on).
-  punchIn: (coords?: { lat: number; lng: number; accuracy?: number }) =>
+  punchIn: (params?: { lat?: number; lng?: number; accuracy?: number; selfie?: string }) =>
     request<{ record: any }>('/api/attendance', {
       method: 'POST',
-      body: JSON.stringify({ action: 'punch_in', ...(coords ?? {}) }),
+      body: JSON.stringify({ action: 'punch_in', ...(params ?? {}) }),
     }),
-  punchOut: () =>
-    request<{ record: any }>('/api/attendance', { method: 'POST', body: JSON.stringify({ action: 'punch_out' }) }),
+  punchOut: (params?: { lat?: number; lng?: number; accuracy?: number; selfie?: string }) =>
+    request<{ record: any }>('/api/attendance', {
+      method: 'POST',
+      body: JSON.stringify({ action: 'punch_out', ...(params ?? {}) }),
+    }),
   delete: (id: string) =>
     request('/api/attendance', { method: 'DELETE', body: JSON.stringify({ id }) }),
   edit: (data: { id: string; date?: string; punch_in?: string; punch_out?: string; worked_hours?: number; status?: string }) =>

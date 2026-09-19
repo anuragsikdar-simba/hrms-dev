@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { verifyAuth } from '@/lib/auth-helpers';
+import { verifyAuth, supabaseAdmin } from '@/lib/auth-helpers';
 import { logAudit, getClientIp } from '@/lib/audit';
 import { rateLimiters } from '@/lib/rate-limit';
 import { errorResponse } from '@/lib/api-errors';
@@ -218,6 +218,31 @@ export async function POST(request: NextRequest) {
     const geoLat = num((body as Record<string, unknown>).lat);
     const geoLng = num((body as Record<string, unknown>).lng);
     const geoAccuracy = num((body as Record<string, unknown>).accuracy);
+    const now = new Date().toISOString();
+    const today = businessDate();
+    // Process optional compressed selfie image
+    let selfiePath: string | null = null;
+    const rawSelfie = (body as Record<string, unknown>).selfie;
+    if (typeof rawSelfie === 'string' && rawSelfie.startsWith('data:image/')) {
+      try {
+        const commaIdx = rawSelfie.indexOf(',');
+        if (commaIdx !== -1) {
+          const b64 = rawSelfie.slice(commaIdx + 1);
+          const buf = Buffer.from(b64, 'base64');
+          const ext = rawSelfie.includes('image/webp') ? 'webp' : 'jpg';
+          const stamp = Date.now();
+          const p = `${user.uid}/selfie_${today}_${action}_${stamp}.${ext}`;
+          const { error: upErr } = await supabaseAdmin.storage
+            .from('documents')
+            .upload(p, buf, { contentType: `image/${ext}`, upsert: true });
+          if (!upErr) {
+            selfiePath = p;
+          }
+        }
+      } catch (err) {
+        console.error('[attendance] selfie upload error:', err);
+      }
+    }
 
     // SECURITY: never trust a client-supplied IP or flag. The server reads the
     // real client IP from the request and evaluates it against the allowlist /
@@ -259,8 +284,6 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    const now = new Date().toISOString();
-    const today = businessDate();
 
     if (action === 'punch_in') {
       // Geofence check (allow-and-flag; blocking would strand employees with
@@ -329,6 +352,7 @@ export async function POST(request: NextRequest) {
             ip_address: ipDecision.ip,
             ip_flagged: ipDecision.flagged,
             ...(geoNote ? { notes: geoNote } : {}),
+            ...(selfiePath ? { punch_in_selfie_url: selfiePath } : {}),
           })
           .eq('id', existing.id)
           .select()
@@ -354,6 +378,7 @@ export async function POST(request: NextRequest) {
           ip_address: ipDecision.ip,
           ip_flagged: ipDecision.flagged,
           ...(geoNote ? { notes: geoNote } : {}),
+          ...(selfiePath ? { punch_in_selfie_url: selfiePath } : {}),
         })
         .select()
         .single();
@@ -416,7 +441,11 @@ export async function POST(request: NextRequest) {
 
     const { data, error } = await db
       .from('attendance')
-      .update({ punch_out: now, worked_hours: workedHours })
+      .update({
+        punch_out: now,
+        worked_hours: workedHours,
+        ...(selfiePath ? { punch_out_selfie_url: selfiePath } : {}),
+      })
       .eq('id', openRecord.id)
       .select()
       .single();

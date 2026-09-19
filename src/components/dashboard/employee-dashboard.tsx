@@ -22,6 +22,7 @@ import api from '@/lib/api-client';
 import { businessDate } from '@/lib/dates';
 import { calcActiveMs, calcBreakMs, formatShortTime, MAX_BREAK_MS, getPunchCoords } from './punch-button';
 import type { PunchState, PunchSession } from './punch-button';
+import { SelfieModal } from './selfie-modal';
 
 /* Max session before auto punch-out (12 hours in ms) */
 const MAX_SESSION_MS = 12 * 60 * 60 * 1000;
@@ -941,6 +942,9 @@ export function EmployeeDashboard() {
   const [attendanceId, setAttendanceId] = useState<string | null>(null); // Attendance row ID
   const [activeSegmentId, setActiveSegmentId] = useState<string | null>(null); // Current open segment ID
   const [monthlySummary, setMonthlySummary] = useState<MonthlySummary>({ present: 0, workingDays: 0, onLeave: 0, absent: 0, avgPunchIn: '--:--' });
+  // Selfie modal state
+  const [selfieModalOpen, setSelfieModalOpen] = useState(false);
+  const [selfieAction, setSelfieAction] = useState<'punch_in' | 'punch_out'>('punch_in');
   const { toast } = useToast();
   const autoPunchOutFired = useRef(false);
   const ipCheck = useIpCheck();
@@ -1102,20 +1106,17 @@ export function EmployeeDashboard() {
     })();
   }, [employeeId]);
 
-  const handlePunchIn = useCallback(async () => {
+  const executePunchIn = useCallback(async (selfieDataUrl: string | null) => {
     if (!employeeId) return;
     setPunchLoading(true);
     try {
       const now = new Date().toISOString();
-
-      // Punch in. The server detects the real IP, decides the flag, and
-      // (when flagged) creates the IP-violation approval request itself.
-      // The client no longer sends or is trusted for any IP/flag value.
-      // Best-effort location for geofencing; null (denied/unavailable) never blocks.
       const coords = await getPunchCoords();
-      const { record: att } = await api.attendance.punchIn(coords ?? undefined);
+      const { record: att } = await api.attendance.punchIn({
+        ...(coords ?? {}),
+        selfie: selfieDataUrl ?? undefined,
+      });
 
-      // Create first segment via API
       const { segment } = await api.segments.startBreak(att.id);
 
       setAttendanceId(att.id);
@@ -1128,7 +1129,6 @@ export function EmployeeDashboard() {
       });
       setPunchState('active');
 
-      // If the server flagged this punch (unrecognized IP), inform the user.
       if (att.ip_flagged) {
         toast({
           variant: 'warning',
@@ -1141,6 +1141,11 @@ export function EmployeeDashboard() {
     }
     setPunchLoading(false);
   }, [employeeId, toast]);
+
+  const requestPunchIn = useCallback(() => {
+    setSelfieAction('punch_in');
+    setSelfieModalOpen(true);
+  }, []);
 
   const handlePause = useCallback(async () => {
     if (!attendanceId || !activeSegmentId) return;
@@ -1197,21 +1202,21 @@ export function EmployeeDashboard() {
     setPunchLoading(false);
   }, [attendanceId, toast]);
 
-  const handlePunchOut = useCallback(async () => {
+  const executePunchOut = useCallback(async (selfieDataUrl: string | null) => {
     if (!attendanceId) return;
     setPunchLoading(true);
     try {
       const now = new Date();
-
-      // Close last open segment if there is one
       if (activeSegmentId) {
         await api.segments.endBreak(activeSegmentId);
         setActiveSegmentId(null);
       }
 
-      // Punch out via API. The server detects the real IP, decides the flag,
-      // and (when flagged) creates the IP-violation approval request itself.
-      const { record: att } = await api.attendance.punchOut();
+      const coords = await getPunchCoords();
+      const { record: att } = await api.attendance.punchOut({
+        ...(coords ?? {}),
+        selfie: selfieDataUrl ?? undefined,
+      });
 
       setSession((prev) => {
         if (!prev) return prev;
@@ -1228,7 +1233,6 @@ export function EmployeeDashboard() {
       });
       setPunchState('done');
 
-      // If the server flagged this punch-out (unrecognized IP), inform the user.
       if (att?.ip_flagged) {
         toast({
           variant: 'error',
@@ -1242,6 +1246,20 @@ export function EmployeeDashboard() {
     setPunchLoading(false);
   }, [attendanceId, activeSegmentId, punchState, toast]);
 
+  const requestPunchOut = useCallback(() => {
+    setSelfieAction('punch_out');
+    setSelfieModalOpen(true);
+  }, []);
+
+  const handleSelfieCaptured = useCallback(async (selfieDataUrl: string | null) => {
+    setSelfieModalOpen(false);
+    if (selfieAction === 'punch_in') {
+      await executePunchIn(selfieDataUrl);
+    } else {
+      await executePunchOut(selfieDataUrl);
+    }
+  }, [selfieAction, executePunchIn, executePunchOut]);
+
   /* ---- Auto punch-out after MAX_SESSION_MS ---- */
   useEffect(() => {
     if (punchState !== 'active' && punchState !== 'paused') return;
@@ -1254,7 +1272,7 @@ export function EmployeeDashboard() {
         // Persist via the real punch-out API (handles segments + worked_hours
         // server-side, capped at the session limit). Do NOT only mutate state,
         // otherwise the open record would remain in the DB.
-        void handlePunchOut();
+        void executePunchOut(null);
         toast({
           variant: 'error',
           title: 'Auto punched out',
@@ -1270,7 +1288,7 @@ export function EmployeeDashboard() {
         const breakMs = calcBreakMs(session);
         if (breakMs >= MAX_BREAK_MS) {
           autoPunchOutFired.current = true;
-          void handlePunchOut();
+          void executePunchOut(null);
           toast({
             variant: 'error',
             title: 'Auto punched out (break too long)',
@@ -1281,7 +1299,7 @@ export function EmployeeDashboard() {
     }, 30_000); // check every 30s
 
     return () => clearInterval(id);
-  }, [punchState, session, toast, handlePunchOut]);
+  }, [punchState, session, toast, executePunchOut]);
 
   /* ---- Reset auto-fire flag on new punch-in ---- */
   useEffect(() => {
@@ -1291,32 +1309,41 @@ export function EmployeeDashboard() {
   }, [punchState]);
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-[2fr_1fr] gap-4">
-      {/* ---- Left Column ---- */}
-      <div className="space-y-4 min-w-0">
-        {userProfile?.tracksAttendance !== false && (
-          <PunchCard
-            punchState={punchState}
-            session={session}
-            punchLoading={punchLoading}
-            onPunchIn={handlePunchIn}
-            onPause={handlePause}
-            onResume={handleResume}
-            onPunchOut={handlePunchOut}
-            ipCheck={ipCheck}
-            monthlySummary={monthlySummary}
-          />
-        )}
-        <UpcomingCard />
-        <LeaveBalanceCard employeeId={employeeId} />
-      </div>
+    <>
+      <div className="grid grid-cols-1 lg:grid-cols-[2fr_1fr] gap-4">
+        {/* ---- Left Column ---- */}
+        <div className="space-y-4 min-w-0">
+          {userProfile?.tracksAttendance !== false && (
+            <PunchCard
+              punchState={punchState}
+              session={session}
+              punchLoading={punchLoading}
+              onPunchIn={requestPunchIn}
+              onPause={handlePause}
+              onResume={handleResume}
+              onPunchOut={requestPunchOut}
+              ipCheck={ipCheck}
+              monthlySummary={monthlySummary}
+            />
+          )}
+          <UpcomingCard />
+          <LeaveBalanceCard employeeId={employeeId} />
+        </div>
 
-      {/* ---- Right Column ---- */}
-      <div className="space-y-4 min-w-0">
-        <PendingActionsCard employeeId={employeeId} />
-        <MiniMonthHeatmap employeeId={employeeId} joiningDate={userProfile?.dateOfJoining as unknown as string} />
-        <ActivityCard employeeId={employeeId} />
+        {/* ---- Right Column ---- */}
+        <div className="space-y-4 min-w-0">
+          <PendingActionsCard employeeId={employeeId} />
+          <MiniMonthHeatmap employeeId={employeeId} joiningDate={userProfile?.dateOfJoining as unknown as string} />
+          <ActivityCard employeeId={employeeId} />
+        </div>
       </div>
-    </div>
+      <SelfieModal
+        open={selfieModalOpen}
+        onClose={() => setSelfieModalOpen(false)}
+        actionType={selfieAction}
+        onCapture={handleSelfieCaptured}
+        loading={punchLoading}
+      />
+    </>
   );
 }
