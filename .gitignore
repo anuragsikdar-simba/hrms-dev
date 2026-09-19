@@ -1,0 +1,13 @@
+node_modules/
+.next/
+.env.local
+.env
+.env.*.local
+.env.development.local
+.env.production.local
+.env.test.local
+*.log
+.DS_Store
+
+# TypeScript incremental build cache (artifact)
+tsconfig.tsbuildinfo
